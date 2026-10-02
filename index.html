@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity Runner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #1a1a2e;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            /* 16:9 Aspect Ratio loosely */
+            aspect-ratio: 2 / 1; 
+            background: #16213e;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid #0f3460;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* UI Overlays for Start and Game Over screens */
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(22, 33, 62, 0.85);
+            transition: opacity 0.3s ease;
+        }
+
+        .hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .btn {
+            background: #e94560;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.1s, background 0.2s;
+            margin-top: 20px;
+        }
+
+        .btn:hover {
+            background: #ff5273;
+            transform: scale(1.05);
+        }
+
+        .btn:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- The Main Game Canvas -->
+        <canvas id="gameCanvas"></canvas>
+
+        <!-- Start Screen UI -->
+        <div id="startScreen" class="ui-layer">
+            <h1 class="text-5xl font-bold mb-4 text-[#e94560] drop-shadow-lg">ANTIGRAVITY</h1>
+            <p class="text-lg text-gray-300">Press Spacebar or Click to flip gravity!</p>
+            <p class="text-md text-gray-400 mb-4">Avoid the obstacles.</p>
+            <button class="btn" id="startBtn">PLAY GAME</button>
+        </div>
+
+        <!-- Game Over Screen UI -->
+        <div id="gameOverScreen" class="ui-layer hidden">
+            <h1 class="text-5xl font-bold mb-2 text-red-500">GAME OVER</h1>
+            <p class="text-2xl mb-4">Score: <span id="finalScore" class="font-bold text-[#e94560]">0</span></p>
+            <button class="btn" id="restartBtn">TRY AGAIN</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. Setup Canvas and Context ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Logical resolution for the game logic (independent of screen size)
+        const GAME_WIDTH = 800;
+        const GAME_HEIGHT = 400;
+        canvas.width = GAME_WIDTH;
+        canvas.height = GAME_HEIGHT;
+
+        // UI Elements
+        const startScreen = document.getElementById('startScreen');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const finalScoreText = document.getElementById('finalScore');
+
+        // Game State Variables
+        let gameState = 'START'; // 'START', 'PLAYING', 'GAMEOVER'
+        let score = 0;
+        let frameCount = 0;
+        let gameSpeed = 5;
+        let animationId;
+
+        // Physics Constants
+        const GRAVITY_FORCE = 0.6;
+        let currentGravity = GRAVITY_FORCE;
+
+        // --- 2. Player Class ---
+        class Player {
+            constructor() {
+                this.size = 30;
+                this.x = 100; // Fixed horizontal position
+                this.y = GAME_HEIGHT / 2; // Start in middle
+                this.velocity = 0;
+                this.color = '#00ffcc'; // Neon cyan
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                // Add a glow effect
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+                // Reset shadow for other elements
+                ctx.shadowBlur = 0; 
+            }
+
+            update() {
+                // Apply gravity to velocity (Physics: v = u + at)
+                this.velocity += currentGravity;
+                
+                // Cap maximum falling/rising speed
+                if (this.velocity > 12) this.velocity = 12;
+                if (this.velocity < -12) this.velocity = -12;
+
+                // Apply velocity to position (Physics: s = s0 + vt)
+                this.y += this.velocity;
+
+                // Collision with Floor
+                if (this.y + this.size >= GAME_HEIGHT) {
+                    this.y = GAME_HEIGHT - this.size;
+                    this.velocity = 0; // Stop moving when hitting the ground
+                }
+                
+                // Collision with Ceiling
+                if (this.y <= 0) {
+                    this.y = 0;
+                    this.velocity = 0; // Stop moving when hitting the ceiling
+                }
+            }
+
+            flip() {
+                // Reverse gravity direction
+                currentGravity = -currentGravity;
+                
+                // Optional: Give a slight boost in the new direction for better responsiveness
+                if (currentGravity < 0) {
+                    this.velocity = -4; // Boost up
+                } else {
+                    this.velocity = 4;  // Boost down
+                }
+            }
+        }
+
+        // --- 3. Obstacle Class ---
+        class Obstacle {
+            constructor() {
+                this.width = 40;
+                this.x = GAME_WIDTH;
+                
+                // Determine if obstacle is on the ceiling (top) or floor (bottom)
+                this.isTop = Math.random() > 0.5;
+                
+                // Random height between 50 and 200
+                this.height = Math.random() * 150 + 50; 
+                
+                this.y = this.isTop ? 0 : GAME_HEIGHT - this.height;
+                this.color = '#e94560'; // Neon pink/red
+                this.passed = false; // To check if player passed it for scoring
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                
+                // Add a slightly lighter border for visual depth
+                ctx.strokeStyle = '#ff5273';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(this.x, this.y, this.width, this.height);
+            }
+
+            update() {
+                this.x -= gameSpeed;
+            }
+
+            // AABB Collision Detection (Axis-Aligned Bounding Box)
+            // Checks if two rectangles overlap
+            checkCollision(player) {
+                if (
+                    player.x < this.x + this.width &&
+                    player.x + player.size > this.x &&
+                    player.y < this.y + this.height &&
+                    player.y + player.size > this.y
+                ) {
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        // --- 4. Game Variables and Initialization ---
+        let player = new Player();
+        let obstacles = [];
+
+        function resetGame() {
+            player = new Player();
+            obstacles = [];
+            score = 0;
+            frameCount = 0;
+            gameSpeed = 5;
+            currentGravity = GRAVITY_FORCE;
+            gameState = 'PLAYING';
+            
+            // Hide UI
+            startScreen.classList.add('hidden');
+            gameOverScreen.classList.add('hidden');
+            
+            // Start Loop
+            cancelAnimationFrame(animationId);
+            gameLoop();
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            finalScoreText.innerText = score;
+            gameOverScreen.classList.remove('hidden');
+        }
+
+        // --- 5. Event Listeners for Controls ---
+        function handleInput(e) {
+            // Prevent default scrolling for Spacebar
+            if(e.type === 'keydown' && e.code === 'Space') {
+                e.preventDefault(); 
+            }
+
+            if (gameState === 'PLAYING') {
+                player.flip();
+            } else if (gameState === 'START' || gameState === 'GAMEOVER') {
+                // Allow pressing space to start/restart
+                if (e.type === 'mousedown' || e.type === 'touchstart' || (e.type === 'keydown' && e.code === 'Space')) {
+                    resetGame();
+                }
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') handleInput(e);
+        });
+        
+        // Listen to canvas clicks/touches for mobile support
+        canvas.addEventListener('mousedown', handleInput);
+        canvas.addEventListener('touchstart', handleInput, {passive: false});
+
+        // UI Button listeners
+        document.getElementById('startBtn').addEventListener('click', resetGame);
+        document.getElementById('restartBtn').addEventListener('click', resetGame);
+
+        // --- 6. Main Game Loop ---
+        function gameLoop() {
+            if (gameState !== 'PLAYING') return;
+
+            // Clear the canvas for the next frame
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Background details (optional grid/lines)
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, GAME_HEIGHT / 2);
+            ctx.lineTo(GAME_WIDTH, GAME_HEIGHT / 2);
+            ctx.stroke();
+
+            // Update and draw player
+            player.update();
+            player.draw();
+
+            // Obstacle Spawning Logic
+            // Spawn a new obstacle every X frames. Decrease interval to make it harder.
+            let spawnRate = Math.max(60, 100 - Math.floor(score / 5)); 
+            if (frameCount % spawnRate === 0) {
+                obstacles.push(new Obstacle());
+            }
+
+            // Update and draw obstacles
+            for (let i = 0; i < obstacles.length; i++) {
+                let obs = obstacles[i];
+                obs.update();
+                obs.draw();
+
+                // Check collision
+                if (obs.checkCollision(player)) {
+                    gameOver();
+                    return; // Stop the loop immediately
+                }
+
+                // Score update
+                // If obstacle passes the player and hasn't been scored yet
+                if (obs.x + obs.width < player.x && !obs.passed) {
+                    score++;
+                    obs.passed = true;
+                    // Slightly increase game speed over time
+                    if (score % 5 === 0) {
+                        gameSpeed += 0.5;
+                    }
+                }
+            }
+
+            // Remove off-screen obstacles to free memory (Garbage Collection optimization)
+            obstacles = obstacles.filter(obs => obs.x + obs.width > 0);
+
+            // Draw UI (Score)
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.font = 'bold 100px Arial';
+            ctx.textAlign = 'center';
+            // Draw score in the background center
+            ctx.fillText(score, GAME_WIDTH / 2, GAME_HEIGHT / 2 + 35); 
+
+            frameCount++;
+            
+            // Loop! Request the browser to call gameLoop again before the next repaint
+            animationId = requestAnimationFrame(gameLoop);
+        }
+
+        // --- 7. Initial Setup ---
+        // Draw initial static state
+        ctx.fillStyle = '#00ffcc';
+        ctx.fillRect(100, GAME_HEIGHT / 2, 30, 30);
+        
+    </script>
+</body>
+</html>
